@@ -11,3 +11,6 @@ venv/
 .idea/
 *.swp
 *.swo
+
+# Rapports HTML générés
+reports/

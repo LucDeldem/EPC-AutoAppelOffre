@@ -1,126 +1,125 @@
 """
-Module de filtrage et scoring des annonces BOAMP
+Filtrage et scoring des annonces BOAMP par mots-clés métier.
+
+Détection robuste :
+  - insensible à la casse et aux accents (soutenement == soutènement) ;
+  - insensible au pluriel simple (micropieu / micropieux) ;
+  - insensible aux espaces multiples et aux apostrophes typographiques ;
+  - périmètre de texte maîtrisé (objet + description) pour limiter les
+    faux positifs sur les noms d'acheteurs ou les adresses.
 """
 
 import re
 import logging
-from typing import List, Dict, Any, Tuple
-from config import KEYWORDS_SCORING, SCORE_THRESHOLD_FOR_GPT
+import unicodedata
+from typing import Any, Dict, List, Tuple
+
+from config import KEYWORDS_SCORING, SCORE_THRESHOLD_KEEP
 
 logger = logging.getLogger(__name__)
 
 
+def normalize_text(text: str) -> str:
+    """Minuscule + suppression des accents + apostrophes/espaces normalisés."""
+    if not text:
+        return ""
+    text = text.replace("’", "'").replace("`", "'")
+    # Décomposition Unicode puis suppression des marques diacritiques
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _build_pattern(keyword: str) -> re.Pattern:
+    """Compile un motif robuste (accents, pluriel, espaces) pour un mot-clé.
+
+    Le pluriel simple est toléré sur CHAQUE mot de la locution : un radical
+    finissant par 's' voit son 's' rendu optionnel, sinon un 's?' est ajouté.
+    Ainsi « micropieux » matche aussi « micropieu », et « tirant d'ancrage »
+    matche « tirants d'ancrage ».
+    """
+    pieces = []
+    for tok in re.split(r"[\s\-]+", normalize_text(keyword)):
+        if not tok:
+            continue
+        stem = tok[:-1] if (tok[-1:] in ("s", "x") and len(tok) >= 5) else tok
+        pieces.append(re.escape(stem) + "[sx]?")  # pluriels français en -s et -x
+    # Séparateur tolérant espace OU trait d'union (micro-berlinoise == micro berlinoise)
+    return re.compile(r"\b" + r"[\s\-]+".join(pieces) + r"\b")
+
+
 class TenderFilter:
-    """Filtre et score les annonces selon les critères métier"""
-    
+    """Filtre et score les annonces selon les critères métier."""
+
     def __init__(self):
         self.keywords = KEYWORDS_SCORING
-        self.threshold = SCORE_THRESHOLD_FOR_GPT
-    
+        self.threshold = SCORE_THRESHOLD_KEEP
+        # Patterns compilés une seule fois
+        self._patterns = {kw: _build_pattern(kw) for kw in self.keywords}
+
+    # ------------------------------------------------------------------ #
     def filter_and_score(self, tenders: List[Dict[str, Any]]) -> List[Tuple[Dict[str, Any], int]]:
-        """
-        Filtre et score les annonces
-        
-        Args:
-            tenders: Liste des annonces brutes de l'API BOAMP
-        
-        Returns:
-            Liste de tuples (annonce, score) triée par score décroissant
-            Ne retourne que les annonces avec score >= seuil
-        """
-        scored_tenders = []
-        
-        logger.info(f"📋 Scoring de {len(tenders)} annonces...")
-        
+        """Retourne les annonces (avec score >= seuil), triées par score décroissant."""
+        scored: List[Tuple[Dict[str, Any], int]] = []
+        logger.info("Scoring de %d annonces...", len(tenders))
+
         for tender in tenders:
-            score = self._calculate_score(tender)
-            
+            score, matched = self._score(tender)
             if score >= self.threshold:
-                scored_tenders.append((tender, score))
-                logger.debug(f"  ✅ Score {score}: {tender.get('objet', 'N/A')[:60]}")
-            else:
-                logger.debug(f"  ❌ Score {score} (< {self.threshold}): {tender.get('objet', 'N/A')[:60]}")
-        
-        # Tri par score décroissant
-        scored_tenders.sort(key=lambda x: x[1], reverse=True)
-        
-        logger.info(f"📊 {len(scored_tenders)} annonces conservées (score >= {self.threshold})")
-        return scored_tenders
-    
-    def _calculate_score(self, tender: Dict[str, Any]) -> int:
-        """
-        Calcule le score d'une annonce selon les mots-clés métier
-        
-        Args:
-            tender: Dictionnaire représentant une annonce
-        
-        Returns:
-            Score total (entier)
-        """
+                tender["_matched"] = matched          # mémorisé pour l'e-mail
+                scored.append((tender, score))
+                logger.debug("  Score %d (%s): %s",
+                             score, ", ".join(matched), (tender.get("objet") or "")[:60])
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+        logger.info("%d annonces conservées (score >= %d)", len(scored), self.threshold)
+        return scored
+
+    # ------------------------------------------------------------------ #
+    def _score(self, tender: Dict[str, Any]) -> Tuple[int, List[str]]:
+        """Calcule le score et la liste des mots-clés détectés."""
+        # Périmètre maîtrisé : on privilégie l'objet/description, et on complète
+        # avec le haystack (contenu enrichi) fourni par le fetcher s'il existe.
+        parts = [
+            tender.get("titre", ""),
+            tender.get("objet", ""),
+            tender.get("descriptif", ""),
+            tender.get("_haystack", ""),
+        ]
+        text = normalize_text(" ".join(p for p in parts if p))
+
         score = 0
-        
-        # Texte à analyser : titre + objet + description
-        title = (tender.get("titre", "") or "").lower()
-        objet = (tender.get("objet", "") or "").lower()
-        descriptif = (tender.get("descriptif", "") or "").lower()
-        full_text = f"{title} {objet} {descriptif}"
-        
-        # Parcours des mots-clés
+        matched: List[str] = []
         for keyword, points in self.keywords.items():
-            keyword_lower = keyword.lower()
-            
-            # Compte les occurrences du mot-clé (séparé par des limites de mots)
-            pattern = r'\b' + re.escape(keyword_lower) + r'\b'
-            matches = len(re.findall(pattern, full_text))
-            
-            if matches > 0:
-                # Ajoute les points une seule fois par mot-clé (même s'il apparaît plusieurs fois)
+            if self._patterns[keyword].search(text):
                 score += points
-                logger.debug(f"    Keyword '{keyword}' trouvé {matches}x (+{points} pts)")
-        
-        return score
-    
+                matched.append(keyword)
+        return score, matched
+
+    # ------------------------------------------------------------------ #
     def get_tender_summary(self, tender: Dict[str, Any], score: int) -> Dict[str, Any]:
-        """
-        Crée un résumé structuré d'une annonce avec son score
-        
-        Args:
-            tender: Dictionnaire représentant une annonce
-            score: Score calculé
-        
-        Returns:
-            Dictionnaire structuré avec les infos pertinentes
-        """
+        """Résumé structuré d'une annonce (schéma stable pour l'e-mail)."""
+        descriptif = tender.get("descriptif", "") or ""
+        if len(descriptif) > 600:
+            descriptif = descriptif[:600].rstrip() + "…"
+
         return {
             "id": tender.get("id"),
             "titre": tender.get("titre", "N/A"),
             "objet": tender.get("objet", "N/A"),
-            "descriptif": (tender.get("descriptif", "")[:500] + "...") 
-                         if len(tender.get("descriptif", "")) > 500 
-                         else tender.get("descriptif", "N/A"),
+            "descriptif": descriptif or "N/A",
             "acheteur": tender.get("acheteur", "N/A"),
             "region": tender.get("region", "N/A"),
             "dateparution": tender.get("dateparution", "N/A"),
             "datedeadline": tender.get("datedeadline", "N/A"),
-            "budget": tender.get("montantuht", "N/A"),
+            "type_marche": tender.get("type_marche", ""),
             "cpv": tender.get("cpv", []),
-            "url": tender.get("urlannonce", "N/A"),
+            "url": tender.get("url", "N/A"),
             "score_initial": score,
-            "raw": tender  # Garde l'original pour débug
+            "matched_keywords": tender.get("_matched", []),
         }
-    
+
     def batch_summarize(self, scored_tenders: List[Tuple[Dict[str, Any], int]]) -> List[Dict[str, Any]]:
-        """
-        Crée des résumés pour toutes les annonces scorées
-        
-        Args:
-            scored_tenders: Liste de tuples (annonce, score)
-        
-        Returns:
-            Liste de résumés structurés
-        """
-        summaries = []
-        for tender, score in scored_tenders:
-            summary = self.get_tender_summary(tender, score)
-            summaries.append(summary)
-        return summaries
+        return [self.get_tender_summary(t, s) for t, s in scored_tenders]

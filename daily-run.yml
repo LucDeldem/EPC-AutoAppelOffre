@@ -1,45 +1,47 @@
-name: 🏗️ EPC AutoAppelOffre - Daily Run
+name: EPC AutoAppelOffre - Daily Run
+
+# IMPORTANT : pour que GitHub exécute ce workflow, le fichier doit être placé
+# dans .github/workflows/daily-run.yml (et non à la racine du dépôt).
 
 on:
   schedule:
-    # Exécution chaque jour à 8h (UTC)
-    - cron: '0 8 * * *'
-  workflow_dispatch:  # Permet de lancer manuellement
+    - cron: '0 8 * * *'   # tous les jours à 08h00 UTC
+  workflow_dispatch:        # lancement manuel possible
 
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: 📥 Checkout du repo
+      - name: Checkout du repo
         uses: actions/checkout@v4
-      
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
-      - name: 📦 Installe les dépendances
+
+      - name: Installe les dépendances
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      
-      - name: 🚀 Lance le pipeline
+
+      - name: Lance le pipeline
         env:
+          PYTHONIOENCODING: 'utf-8'
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           SMTP_HOST: ${{ secrets.SMTP_HOST || 'smtp.gmail.com' }}
           SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
         run: python main.py --lookback 7
-      
-      - name: 📋 Affiche les logs (en cas d'erreur)
+
+      - name: Affiche les logs (en cas d'erreur)
         if: failure()
         run: tail -50 app.log
-      
-      - name: 📤 Upload des logs
+
+      - name: Upload des logs
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: pipeline-logs
           path: app.log

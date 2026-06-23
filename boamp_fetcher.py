@@ -1,168 +1,274 @@
 """
-Module de récupération des annonces depuis l'API BOAMP
+Récupération des annonces depuis l'API BOAMP (Opendatasoft Explore v2.1).
+
+L'ancienne API "Solr" (q=cpv:..., wt=json, response.docs/numFound) a été
+supprimée et renvoie des 404. On utilise désormais l'endpoint records v2.1 :
+  GET .../catalog/datasets/boamp/records?where=...&limit=...&offset=...
+  Réponse : { "total_count": N, "results": [ {champs...} ] }
 """
 
-import requests
+import json
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
-from config import BOAMP_API_BASE_URL, BOAMP_TIMEOUT, CPV_CODES, DEFAULT_LOOKBACK_DAYS
+from typing import Any, Dict, List
+
+import requests
+from requests.adapters import HTTPAdapter
+
+try:  # urllib3 est fourni avec requests
+    from urllib3.util.retry import Retry
+except Exception:  # pragma: no cover
+    Retry = None
+
+from config import (
+    BOAMP_AVIS_URL_TPL,
+    BOAMP_MAX_PAGES,
+    BOAMP_PAGE_SIZE,
+    BOAMP_RECORDS_URL,
+    BOAMP_TIMEOUT,
+    DEFAULT_LOOKBACK_DAYS,
+    GEO_FILTER_ENABLED,
+    GEO_KEEP_UNKNOWN,
+    SEARCH_TERMS,
+    SOUTH_DEPARTMENTS,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class BOAMPFetcher:
-    """Récupère les annonces depuis l'API BOAMP"""
-    
+    """Récupère et normalise les annonces depuis l'API BOAMP v2.1."""
+
     def __init__(self):
-        self.base_url = BOAMP_API_BASE_URL
+        self.url = BOAMP_RECORDS_URL
         self.timeout = BOAMP_TIMEOUT
-    
+        self.session = self._build_session()
+
+    @staticmethod
+    def _build_session() -> requests.Session:
+        session = requests.Session()
+        session.headers.update({
+            "Accept": "application/json",
+            "User-Agent": "EPC-AutoAppelOffre/2.0 (+https://github.com/LucDeldem)",
+        })
+        if Retry is not None:
+            retry = Retry(
+                total=3,
+                backoff_factor=1.0,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=("GET",),
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+        return session
+
+    # ------------------------------------------------------------------ #
+    # API publique
+    # ------------------------------------------------------------------ #
     def fetch_tenders(self, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> List[Dict[str, Any]]:
-        """
-        Récupère les annonces BOAMP des N derniers jours
-        
-        Args:
-            lookback_days: Nombre de jours à remonter (défaut: 30)
-        
-        Returns:
-            Liste des annonces brutes depuis l'API
-        """
-        all_tenders = []
-        start_date = (datetime.now() - timedelta(days=lookback_days)).date()
-        
-        logger.info(f"🔍 Récupération BOAMP depuis {start_date}...")
-        
-        # On récupère d'abord par CPV
-        for cpv_code in CPV_CODES:
-            try:
-                tenders = self._fetch_by_cpv(cpv_code, start_date)
-                logger.info(f"  ✅ CPV {cpv_code}: {len(tenders)} annonces")
-                all_tenders.extend(tenders)
-            except Exception as e:
-                logger.warning(f"  ❌ Erreur CPV {cpv_code}: {e}")
-        
-        # Déduplification par ID
-        seen_ids = set()
-        unique_tenders = []
-        for tender in all_tenders:
-            tender_id = tender.get("id")
-            if tender_id not in seen_ids:
-                seen_ids.add(tender_id)
-                unique_tenders.append(tender)
-        
-        logger.info(f"📊 Total: {len(unique_tenders)} annonces uniques après CPV")
-        return unique_tenders
-    
-    def _fetch_by_cpv(self, cpv_code: str, start_date: str) -> List[Dict[str, Any]]:
-        """
-        Récupère les annonces pour un code CPV spécifique
-        
-        Args:
-            cpv_code: Code CPV (ex: "45232200")
-            start_date: Date de début au format YYYY-MM-DD
-        
-        Returns:
-            Liste des annonces pour ce CPV
-        """
-        tenders = []
-        start = 0
-        rows_per_page = 100
-        
-        while True:
+        """Récupère les annonces des N derniers jours, normalisées et dédupliquées."""
+        start_date = (datetime.now() - timedelta(days=lookback_days)).date().isoformat()
+        logger.info("Récupération BOAMP depuis %s ...", start_date)
+
+        # 1) Pré-filtrage côté serveur par mots-clés métier (volume réduit).
+        where = self._build_where(start_date, with_keywords=True)
+        raw = self._query(where)
+
+        # 2) Fallback : si la requête plein-texte échoue ou ne renvoie rien,
+        #    on retombe sur un filtrage par date seule (scoring 100% client).
+        if not raw:
+            logger.warning("Recherche par mots-clés vide/indisponible -> fallback date seule")
+            raw = self._query(self._build_where(start_date, with_keywords=False))
+
+        normalized = [self._normalize(rec) for rec in raw]
+
+        # Déduplication par identifiant
+        seen, unique = set(), []
+        for tender in normalized:
+            tid = tender.get("id")
+            if tid and tid in seen:
+                continue
+            if tid:
+                seen.add(tid)
+            unique.append(tender)
+
+        logger.info("Total : %d annonces uniques récupérées", len(unique))
+
+        # 3) Filtrage géographique (Sud de la France)
+        if GEO_FILTER_ENABLED:
+            unique = self._filter_south(unique)
+        return unique
+
+    # ------------------------------------------------------------------ #
+    # Filtre géographique
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _filter_south(tenders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Ne conserve que les annonces situées dans les départements du Sud."""
+        kept, dropped, unknown = [], 0, 0
+        for t in tenders:
+            depts = t.get("departements") or set()
+            if not depts:
+                unknown += 1
+                if GEO_KEEP_UNKNOWN:
+                    kept.append(t)
+                else:
+                    dropped += 1
+                continue
+            if depts & SOUTH_DEPARTMENTS:
+                kept.append(t)
+            else:
+                dropped += 1
+        logger.info(
+            "Filtre géo (Sud) : %d gardées, %d hors zone, %d sans département%s",
+            len(kept), dropped, unknown,
+            " (gardées)" if GEO_KEEP_UNKNOWN else " (rejetées)",
+        )
+        return kept
+
+    # ------------------------------------------------------------------ #
+    # Construction des requêtes ODSQL
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _build_where(start_date: str, with_keywords: bool) -> str:
+        """Construit la clause `where` ODSQL."""
+        clause = f'dateparution >= "{start_date}"'
+        if with_keywords and SEARCH_TERMS:
+            # Une chaîne entre guillemets dans `where` = recherche plein-texte.
+            terms = " or ".join(f'"{t}"' for t in SEARCH_TERMS)
+            clause = f"{clause} and ({terms})"
+        return clause
+
+    def _query(self, where: str) -> List[Dict[str, Any]]:
+        """Exécute une requête paginée et renvoie la liste brute des `results`."""
+        results: List[Dict[str, Any]] = []
+        for page in range(BOAMP_MAX_PAGES):
+            offset = page * BOAMP_PAGE_SIZE
             params = {
-                "q": f"cpv:{cpv_code}",
-                "start": start,
-                "rows": rows_per_page,
-                "sort": "dateparution:desc",
-                "wt": "json"
+                "where": where,
+                "order_by": "dateparution desc",
+                "limit": BOAMP_PAGE_SIZE,
+                "offset": offset,
+                "lang": "fr",
+                "timezone": "Europe/Paris",
             }
-            
             try:
-                response = requests.get(
-                    self.base_url,
-                    params=params,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                docs = data.get("response", {}).get("docs", [])
-                if not docs:
-                    break
-                
-                # Filtre sur la date
-                for doc in docs:
-                    date_parution = doc.get("dateparution", "")
-                    if date_parution >= str(start_date):
-                        tenders.append(doc)
-                
-                # Pagination
-                total_results = data.get("response", {}).get("numFound", 0)
-                if start + rows_per_page >= total_results:
-                    break
-                
-                start += rows_per_page
-            
-            except Exception as e:
-                logger.error(f"Erreur requête BOAMP CPV {cpv_code}: {e}")
+                resp = self.session.get(self.url, params=params, timeout=self.timeout)
+                resp.raise_for_status()
+                data = resp.json()
+            except requests.HTTPError as e:
+                # 400 = clause invalide -> on signale et on laisse le fallback agir.
+                logger.error("Erreur HTTP BOAMP (offset=%d): %s", offset, e)
                 break
-        
-        return tenders
-    
-    def fetch_by_keyword(self, keyword: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> List[Dict[str, Any]]:
-        """
-        Récupère les annonces par mot-clé (fallback si besoin)
-        
-        Args:
-            keyword: Mot-clé de recherche
-            lookback_days: Nombre de jours à remonter
-        
-        Returns:
-            Liste des annonces
-        """
-        tenders = []
-        start = 0
-        rows_per_page = 100
-        start_date = (datetime.now() - timedelta(days=lookback_days)).date()
-        
-        while True:
-            params = {
-                "q": keyword,
-                "start": start,
-                "rows": rows_per_page,
-                "sort": "dateparution:desc",
-                "wt": "json"
-            }
-            
-            try:
-                response = requests.get(
-                    self.base_url,
-                    params=params,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-                data = response.json()
-                
-                docs = data.get("response", {}).get("docs", [])
-                if not docs:
-                    break
-                
-                # Filtre sur la date
-                for doc in docs:
-                    date_parution = doc.get("dateparution", "")
-                    if date_parution >= str(start_date):
-                        tenders.append(doc)
-                
-                # Pagination
-                total_results = data.get("response", {}).get("numFound", 0)
-                if start + rows_per_page >= total_results:
-                    break
-                
-                start += rows_per_page
-            
             except Exception as e:
-                logger.error(f"Erreur requête BOAMP mot-clé '{keyword}': {e}")
+                logger.error("Erreur requête BOAMP (offset=%d): %s", offset, e)
                 break
-        
-        return tenders
+
+            # v2.1 : {total_count, results}. On gère aussi un éventuel format v2.0.
+            batch = data.get("results")
+            if batch is None:
+                batch = [r.get("record", {}).get("fields", r)
+                         for r in data.get("records", [])]
+            if not batch:
+                break
+
+            results.extend(batch)
+            total = data.get("total_count", len(results))
+            logger.info("  page %d : %d annonces (cumul %d/%s)",
+                        page + 1, len(batch), len(results), total)
+
+            if len(results) >= total or len(batch) < BOAMP_PAGE_SIZE:
+                break
+        return results
+
+    # ------------------------------------------------------------------ #
+    # Normalisation vers le schéma canonique du pipeline
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple)):
+            return ", ".join(BOAMPFetcher._as_text(v) for v in value if v)
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    @staticmethod
+    def _extract_departments(rec: Dict[str, Any]) -> set:
+        """Extrait l'ensemble des codes département d'un enregistrement.
+
+        Gère les listes, la Corse (2A/2B/20) et un repli sur le code postal
+        (2 premiers chiffres) si `code_departement` est absent.
+        """
+        depts = set()
+
+        def add(value):
+            for v in (value if isinstance(value, (list, tuple)) else [value]):
+                s = str(v).strip().upper()
+                if not s:
+                    continue
+                if s in ("2A", "2B"):
+                    depts.add(s)
+                elif s[:3].isdigit() and s[:3] in ("971", "972", "973", "974", "976"):
+                    depts.add(s[:3])  # DOM
+                elif s[:2].isdigit():
+                    depts.add(s[:2])
+
+        add(rec.get("code_departement"))
+        if not depts:
+            # Replis : champs pouvant contenir un code postal
+            for key in ("cp", "code_postal", "lieu_execution_code"):
+                add(rec.get(key))
+        return depts
+
+    def _normalize(self, rec: Dict[str, Any]) -> Dict[str, Any]:
+        """Convertit un enregistrement ODS en dict canonique stable."""
+        idweb = self._as_text(rec.get("idweb"))
+        objet = self._as_text(rec.get("objet"))
+        url = self._as_text(rec.get("url_avis")) or (
+            BOAMP_AVIS_URL_TPL.format(idweb=idweb) if idweb else "N/A"
+        )
+
+        # Départements (pour le filtre géo) + affichage région lisible.
+        depts = self._extract_departments(rec)
+        region = (
+            self._as_text(rec.get("nom_departement"))
+            or (", ".join(sorted(depts)) if depts else "")
+            or self._as_text(rec.get("perimetre"))
+            or "N/A"
+        )
+
+        # Description AFFICHÉE : propre et lisible (objet + libellés humains),
+        # sans dump JSON.
+        descriptif = objet
+        for key in ("descripteur_libelle", "famille_libelle"):
+            extra = self._as_text(rec.get(key))
+            if extra and extra.lower() not in descriptif.lower():
+                descriptif = f"{descriptif} — {extra}" if descriptif else extra
+
+        # Haystack INTERNE (non affiché) : contenu enrichi pour le scoring,
+        # y compris les données techniques imbriquées.
+        haystack = " ".join(self._as_text(rec.get(k)) for k in (
+            "objet", "descripteur_libelle", "famille_libelle",
+            "nature", "type_marche", "donnees",
+        ))
+
+        return {
+            "id": idweb or None,
+            "titre": objet[:140] if objet else "N/A",
+            "objet": objet or "N/A",
+            "descriptif": descriptif or "N/A",
+            "acheteur": self._as_text(rec.get("nomacheteur")) or "N/A",
+            "region": region,
+            "departements": depts,
+            "dateparution": self._as_text(rec.get("dateparution")) or "N/A",
+            "datedeadline": self._as_text(rec.get("datelimitereponse")) or "N/A",
+            "budget": self._as_text(rec.get("montant")) or "N/A",
+            "cpv": rec.get("code_cpv") or rec.get("cpv") or [],
+            "url": url,
+            "type_marche": self._as_text(rec.get("type_marche")),
+            "_haystack": haystack,
+            "raw": rec,
+        }

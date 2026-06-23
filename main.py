@@ -4,22 +4,32 @@ Script principal - Orchestration du pipeline de filtrage d'appels d'offre
 
 import logging
 import os
-from datetime import datetime
+import sys
 from dotenv import load_dotenv
 from boamp_fetcher import BOAMPFetcher
 from filtering import TenderFilter
-from email_sender import EmailSender
+from email_sender import EmailSender, save_html_report
 from config import DEFAULT_LOOKBACK_DAYS, SCORE_THRESHOLD_FOR_EMAIL
 
-# Configure le logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('app.log')
-    ]
-)
+
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure le logging en UTF-8 (évite les UnicodeEncodeError sous Windows cp1252)."""
+    # Force la console Python en UTF-8 quand c'est possible (Py >= 3.7).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # flux non reconfigurable (ex: redirection particulière)
+
+    fmt = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    stream_handler = logging.StreamHandler(sys.stdout)
+    file_handler = logging.FileHandler("app.log", encoding="utf-8")
+
+    logging.basicConfig(level=level, format=fmt,
+                        handlers=[stream_handler, file_handler])
+
+
+setup_logging()
 logger = logging.getLogger(__name__)
 
 # Charge les variables d'environnement
@@ -82,27 +92,45 @@ def main(lookback_days: int = DEFAULT_LOOKBACK_DAYS, send_email: bool = True):
             logger.info(f"   Acheteur: {tender['acheteur']}")
             logger.info(f"   Région: {tender['region']}")
             logger.info(f"   URL: {tender['url']}")
-        
+
+        # ============ ÉTAPE 4bis : Rapport HTML sur disque ============
+        # Toujours généré : utile même si l'envoi d'e-mail est bloqué (pare-feu).
+        try:
+            report_path = save_html_report(final_tenders)
+            logger.info("\n💾 Rapport HTML enregistré : %s", report_path)
+        except Exception as e:
+            logger.warning("Impossible d'écrire le rapport HTML : %s", e)
+
         # ============ ÉTAPE 5 : Envoi d'email ============
         if send_email:
             logger.info("\n📧 ÉTAPE 5 : Envoi de l'email...")
             
-            # Récupère les credentials depuis l'env
+            # Récupère la configuration SMTP depuis l'env
             smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
             smtp_port = int(os.getenv("SMTP_PORT", "587"))
             sender_email = os.getenv("SENDER_EMAIL")
-            sender_password = os.getenv("SENDER_PASSWORD")
-            
-            if not sender_email or not sender_password:
-                logger.error("❌ Credentials email manquantes (SENDER_EMAIL ou SENDER_PASSWORD)")
-                logger.info("ℹ️  Créez un fichier .env avec:")
-                logger.info("    SMTP_HOST=smtp.gmail.com")
-                logger.info("    SMTP_PORT=587")
-                logger.info("    SENDER_EMAIL=your-email@gmail.com")
-                logger.info("    SENDER_PASSWORD=your-app-password")
+            sender_password = os.getenv("SENDER_PASSWORD", "")
+            smtp_timeout = int(os.getenv("SMTP_TIMEOUT", "30"))
+            # SMTP_SSL=1/0 pour forcer ; sinon auto (SSL si port 465)
+            use_ssl_env = os.getenv("SMTP_SSL")
+            use_ssl = None if use_ssl_env is None else use_ssl_env in ("1", "true", "True")
+            # Relais interne (port 25) : authentification souvent inutile
+            requires_auth = smtp_port != 25
+
+            if not sender_email or (requires_auth and not sender_password):
+                logger.error("❌ Configuration SMTP incomplète (SENDER_EMAIL"
+                             "%s manquant)", " / SENDER_PASSWORD" if requires_auth else "")
+                logger.info("ℹ️  Renseignez un fichier .env, par exemple :")
+                logger.info("    # Gmail (depuis un réseau non bloqué)")
+                logger.info("    SMTP_HOST=smtp.gmail.com / SMTP_PORT=587")
+                logger.info("    SENDER_EMAIL=... / SENDER_PASSWORD=<mot de passe d'application>")
+                logger.info("    # OU relais interne EPC (réseau pro) :")
+                logger.info("    SMTP_HOST=<relais.epc-france.com> / SMTP_PORT=25")
+                logger.info("    SENDER_EMAIL=epc-auto@epc-france.com  (sans SENDER_PASSWORD)")
                 return
-            
-            emailer = EmailSender(smtp_host, smtp_port, sender_email, sender_password)
+
+            emailer = EmailSender(smtp_host, smtp_port, sender_email,
+                                  sender_password, timeout=smtp_timeout, use_ssl=use_ssl)
             
             # Crée le suffixe du sujet
             if lookback_days == DEFAULT_LOOKBACK_DAYS:
