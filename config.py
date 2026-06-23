@@ -61,8 +61,10 @@ DEFAULT_LOOKBACK_DAYS = 30
 EMAIL_RECIPIENT = "luc.deldem@epc-france.com"
 EMAIL_SENDER = "epc-auto-appel@github.actions"
 
-# ==================== API BOAMP ====================
-BOAMP_API_BASE_URL = "https://www.boamp.fr/api/v2/annonces/search"
+# ==================== API BOAMP (Nouvelle API ODS) ====================
+# Nouvelle API BOAMP avec endpoint ODS Explore v2
+BOAMP_API_BASE_URL = "https://www.boamp.fr/api/opendata"
+BOAMP_API_ENDPOINT = "/annonces"
 BOAMP_TIMEOUT = 10  # secondes
 
 # ==================== GPT SETTINGS ====================
