@@ -101,27 +101,12 @@ DEFAULT_LOOKBACK_DAYS = 30
 EMAIL_RECIPIENT = "luc.deldem@epc-france.com"
 EMAIL_SENDER = "epc-auto-appel@github.actions"
 
-# ==================== API BOAMP ====================
-BOAMP_API_BASE_URL = "https://www.boamp.fr/api/v2/annonces/search"
-BOAMP_TIMEOUT = 10  # secondes
-
-# ==================== GPT SETTINGS ====================
-GPT_MODEL = "gpt-4o-mini"  # ou "gpt-3.5-turbo" pour moins cher
-GPT_TEMPERATURE = 0.3  # Réponses plus déterministes
-
-# Prompt système pour l'IA
-GPT_SYSTEM_PROMPT = """Tu es expert en travaux spéciaux, géotechnique, soutènement, 
-confortement de falaises, stabilisation de versants et travaux acrobatiques.
-
-Évalue si cette consultation/marché public est pertinente pour EPC France, 
-une entreprise spécialisée dans ces domaines.
-
-Réponds TOUJOURS en JSON avec la structure suivante:
-{
-  "pertinent": true/false,
-  "score": (0-10),
-  "raison": "explication courte"
-}
-
-Sois strict : accepte les faux positifs (mieux avoir trop d'annonces) 
-mais évite les faux négatifs (ne pas rater une bonne affaire)."""
+# ==================== API BOAMP (Opendatasoft Explore v2.1) ====================
+BOAMP_RECORDS_URL = (
+    "https://boamp-datadila.opendatasoft.com"
+    "/api/explore/v2.1/catalog/datasets/boamp/records"
+)
+BOAMP_PAGE_SIZE = 100
+BOAMP_MAX_PAGES = 50
+BOAMP_TIMEOUT = 20
+BOAMP_AVIS_URL_TPL = 'https://www.boamp.fr/pages/avis/?q=idweb:"{idweb}"'
