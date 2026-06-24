@@ -6,21 +6,21 @@ Chaque jour, le script interroge la base nationale BOAMP, note chaque annonce se
 
 ---
 
-## 📋 Sommaire
+## Sommaire
 
-- [Comment ça marche](#-comment-ça-marche)
-- [Modifier les mots-clés et le scoring](#️-modifier-les-mots-clés-et-le-scoring-fichier-configpy)
-- [Modifier la zone géographique](#-modifier-la-zone-géographique)
-- [Modifier le destinataire email](#-modifier-le-destinataire-email)
-- [Variables d'environnement](#-variables-denvironnement-fichier-env)
-- [Mettre en place l'automatisation GitHub Actions](#-automatisation-github-actions)
-- [Lancer le script manuellement](#-lancer-le-script-manuellement)
-- [Dépannage](#-dépannage)
-- [Architecture du projet](#-architecture-du-projet)
+- [🔄 Comment ça marche](#comment-ça-marche)
+- [⚙️ Modifier les mots-clés et le scoring](#modifier-les-mots-clés-et-le-scoring-fichier-configpy)
+- [🗺️ Modifier la zone géographique](#modifier-la-zone-géographique)
+- [📧 Modifier le destinataire email](#modifier-le-destinataire-email)
+- [🔐 Variables d'environnement](#variables-denvironnement-fichier-env)
+- [⚡ Automatisation GitHub Actions](#automatisation-github-actions)
+- [💻 Lancer le script manuellement](#lancer-le-script-manuellement)
+- [🐛 Dépannage](#dépannage)
+- [📁 Architecture du projet](#architecture-du-projet)
 
 ---
 
-## 🔄 Comment ça marche
+## Comment ça marche
 
 ```
 API BOAMP (boamp-datadila.opendatasoft.com)
@@ -45,7 +45,7 @@ API BOAMP (boamp-datadila.opendatasoft.com)
 
 ---
 
-## ⚙️ Modifier les mots-clés et le scoring (fichier `config.py`)
+## Modifier les mots-clés et le scoring (fichier `config.py`)
 
 > **Pas besoin de toucher au code** : tout ce qui concerne la pertinence métier est centralisé dans `config.py`.
 
@@ -121,7 +121,7 @@ SCORE_THRESHOLD_FOR_EMAIL = 8  # Score minimum pour apparaître dans l'email
 
 ---
 
-## 🗺️ Modifier la zone géographique
+## Modifier la zone géographique
 
 Dans `config.py`, la section `GEO_FILTER_ENABLED` et `SOUTH_DEPARTMENTS` :
 
@@ -145,7 +145,7 @@ Pour ajouter une région, il suffit d'ajouter les numéros de départements corr
 
 ---
 
-## 📧 Modifier le destinataire email
+## Modifier le destinataire email
 
 Dans `config.py` :
 
@@ -161,7 +161,7 @@ EMAIL_RECIPIENT = "direction@epc-france.com, commercial@epc-france.com"
 
 ---
 
-## 🔐 Variables d'environnement (fichier `.env`)
+## Variables d'environnement (fichier `.env`)
 
 Le script a besoin de credentials email pour envoyer le rapport. Ces informations **ne doivent jamais être écrites directement dans le code** — elles sont stockées dans un fichier `.env` (en local) ou dans les Secrets GitHub (pour l'automatisation).
 
@@ -190,7 +190,7 @@ Gmail n'accepte pas votre mot de passe habituel pour les scripts automatiques. I
 
 ---
 
-## ⚡ Automatisation GitHub Actions
+## Automatisation GitHub Actions
 
 GitHub Actions permet d'exécuter le script automatiquement tous les jours, sans qu'un ordinateur soit allumé.
 
@@ -256,7 +256,7 @@ Les logs s'affichent en temps réel. Le fichier `app.log` est conservé 30 jours
 
 ---
 
-## 💻 Lancer le script manuellement
+## Lancer le script manuellement
 
 ### Prérequis
 
@@ -309,7 +309,7 @@ python main.py --lookback 60
 
 ---
 
-## 🐛 Dépannage
+## Dépannage
 
 ### "Credentials email manquantes" au lancement
 
@@ -341,7 +341,7 @@ python main.py --lookback 60
 
 ---
 
-## 📁 Architecture du projet
+## Architecture du projet
 
 ```
 EPC-AutoAppelOffre/
@@ -362,7 +362,7 @@ EPC-AutoAppelOffre/
 
 ---
 
-## 🔒 Sécurité
+## Sécurité
 
 - Le fichier `.env` contenant les credentials est exclu de Git via `.gitignore` → il ne sera jamais publié sur GitHub.
 - En GitHub Actions, les credentials sont stockés en tant que **Secrets chiffrés** et ne sont jamais visibles dans les logs.
@@ -371,7 +371,7 @@ EPC-AutoAppelOffre/
 
 ---
 
-## 👤 Auteur & Contact
+## Auteur & Contact
 
 **Luc Deldem** — Stagiaire DSI, EPC France  
 [luc.deldem@epc-france.com](mailto:luc.deldem@epc-france.com)
