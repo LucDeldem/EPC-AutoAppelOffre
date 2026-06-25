@@ -171,16 +171,16 @@ def build_html_report(tenders: List[Dict[str, Any]],
         <!-- En-tête -->
         <tr><td style="padding:0 16px 20px 16px;">
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-                 style="background:linear-gradient(135deg,#1e3a8a,#2563eb);
-                        border-radius:12px;">
-            <tr><td style="padding:24px 24px;">
+                 bgcolor="#1e3a8a"
+                 style="background-color:#1e3a8a;border-radius:12px;">
+            <tr><td style="padding:24px 24px;background-color:#1e3a8a;border-radius:12px;">
               <div style="font-size:13px;color:#bfdbfe;letter-spacing:1px;
-                          text-transform:uppercase;">EPC · Veille appels d'offre</div>
-              <div style="font-size:24px;font-weight:700;color:#ffffff;margin-top:4px;">
-                📢 {len(tenders)} opportunité{'s' if len(tenders) > 1 else ''} détectée{'s' if len(tenders) > 1 else ''}
+                          text-transform:uppercase;">EPC &middot; Veille appels d'offre</div>
+              <div style="font-size:24px;font-weight:700;color:#ffffff;margin-top:6px;">
+                {len(tenders)} opportunit&eacute;{'s' if len(tenders) > 1 else ''} d&eacute;tect&eacute;e{'s' if len(tenders) > 1 else ''}
               </div>
-              <div style="font-size:13px;color:#dbeafe;margin-top:6px;">
-                {today} {sub} · soutènement, confortement, micropieux…
+              <div style="font-size:13px;color:#dbeafe;margin-top:8px;">
+                {today} {sub} &middot; sout&egrave;nement, confortement, micropieux&hellip;
               </div>
             </td></tr>
           </table>
