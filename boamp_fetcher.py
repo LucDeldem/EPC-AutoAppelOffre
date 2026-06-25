@@ -21,14 +21,18 @@ except Exception:  # pragma: no cover
     Retry = None
 
 from config import (
+    ALLOWED_NATURES,
     BOAMP_AVIS_URL_TPL,
     BOAMP_MAX_PAGES,
     BOAMP_PAGE_SIZE,
     BOAMP_RECORDS_URL,
     BOAMP_TIMEOUT,
     DEFAULT_LOOKBACK_DAYS,
+    EXCLUDE_EXPIRED_DEADLINE,
     GEO_FILTER_ENABLED,
     GEO_KEEP_UNKNOWN,
+    KEEP_TENDERS_WITHOUT_DEADLINE,
+    ONLY_OPEN_TENDERS,
     SEARCH_TERMS,
     SOUTH_DEPARTMENTS,
 )
@@ -83,22 +87,80 @@ class BOAMPFetcher:
 
         normalized = [self._normalize(rec) for rec in raw]
 
-        # Déduplication par identifiant
+        # Déduplication : par identifiant (idweb) si présent, sinon repli sur
+        # une clé titre+acheteur. Évite qu'une même annonce remontée par
+        # plusieurs mots-clés apparaisse en double dans l'e-mail.
         seen, unique = set(), []
         for tender in normalized:
             tid = tender.get("id")
-            if tid and tid in seen:
+            key = (
+                str(tid).strip().lower() if tid
+                else (
+                    (tender.get("titre") or "").strip().lower(),
+                    (tender.get("acheteur") or "").strip().lower(),
+                )
+            )
+            if key in seen:
                 continue
-            if tid:
-                seen.add(tid)
+            seen.add(key)
             unique.append(tender)
 
         logger.info("Total : %d annonces uniques récupérées", len(unique))
 
-        # 3) Filtrage géographique (Sud de la France)
+        # 3) Filtrage des offres dont la date limite de réponse est dépassée
+        #    (on ne peut plus candidater -> offre plus disponible).
+        if EXCLUDE_EXPIRED_DEADLINE:
+            unique = self._filter_open_deadline(unique)
+
+        # 4) Filtrage géographique (Sud de la France)
         if GEO_FILTER_ENABLED:
             unique = self._filter_south(unique)
         return unique
+
+    # ------------------------------------------------------------------ #
+    # Filtre date limite de réponse
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _filter_open_deadline(tenders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Ne conserve que les annonces dont la date limite n'est pas dépassée."""
+        today = datetime.now().date()
+        kept, expired, unknown = [], 0, 0
+        for t in tenders:
+            deadline = BOAMPFetcher._parse_deadline(t.get("datedeadline"))
+            if deadline is None:
+                unknown += 1
+                if KEEP_TENDERS_WITHOUT_DEADLINE:
+                    kept.append(t)
+                continue
+            if deadline >= today:
+                kept.append(t)
+            else:
+                expired += 1
+        logger.info(
+            "Filtre disponibilité : %d ouvertes, %d expirées, %d sans date limite%s",
+            len(kept), expired, unknown,
+            " (gardées)" if KEEP_TENDERS_WITHOUT_DEADLINE else " (rejetées)",
+        )
+        return kept
+
+    @staticmethod
+    def _parse_deadline(value: Any):
+        """Parse une date limite ODS en `date`, ou None si absente/illisible."""
+        if not value or value == "N/A":
+            return None
+        text = str(value).strip()
+        # ODS renvoie souvent un ISO 8601 ("2026-07-15" ou "2026-07-15T12:00:00+02:00").
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+        # Repli : on tente quelques formats fréquents.
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(text[:10], fmt).date()
+            except ValueError:
+                continue
+        return None
 
     # ------------------------------------------------------------------ #
     # Filtre géographique
@@ -134,6 +196,13 @@ class BOAMPFetcher:
     def _build_where(start_date: str, with_keywords: bool) -> str:
         """Construit la clause `where` ODSQL."""
         clause = f'dateparution >= "{start_date}"'
+
+        # Ne garder que les avis d'appel à la concurrence encore ouverts :
+        # on exclut les "ATTRIBUTION" (marché déjà accepté), "ANNULATION", etc.
+        if ONLY_OPEN_TENDERS and ALLOWED_NATURES:
+            natures = " or ".join(f'nature = "{n}"' for n in sorted(ALLOWED_NATURES))
+            clause = f"{clause} and ({natures})"
+
         if with_keywords and SEARCH_TERMS:
             # Une chaîne entre guillemets dans `where` = recherche plein-texte.
             terms = " or ".join(f'"{t}"' for t in SEARCH_TERMS)

@@ -17,7 +17,6 @@ KEYWORDS_SCORING = {
     # Cœur de métier (10)
     "micropieux": 10,
     "soutènement": 10,
-    "paroi berlinoise": 10,
     "paroi micro-berlinoise": 10,
     "micro-berlinoise": 10,
     "paroi clouée": 10,
@@ -29,11 +28,10 @@ KEYWORDS_SCORING = {
     "stabilisation de talus": 9,
     "stabilisation de versant": 9,
     "berlinoise": 8,
-    "pieux": 8,
     "ancrage": 8,
     "clouage": 8,
     "béton projeté": 8,
-    "gunite": 8,
+    "gunitage": 8,
     "travaux acrobatiques": 8,
     "travaux sur cordes": 8,
 
@@ -42,17 +40,26 @@ KEYWORDS_SCORING = {
     "géotechnique": 6,
     "paroi rocheuse": 6,
     "éboulement": 6,
-    "renforcement": 5,
+    "renforcement": 3,
     "talus": 5,
     "falaise": 5,
-    "forage": 5,
+    "forage": 3,
 
     # Faible / ambigu (1-4)
     "stabilisation": 4,
     "paroi": 3,
-    "fondation": 3,
-    "terrassement": 2,
-    "excavation": 2,
+    "glissement de terrain": 3,
+
+    # Mots-clés NÉGATIFS : EPC réalise des TRAVAUX, pas de la maîtrise d'œuvre
+    # ni des études. On pénalise fortement ces marchés pour qu'ils passent
+    # sous le seuil d'inclusion à l'e-mail (le code fait simplement score += points).
+    "maîtrise d'oeuvre": -8,
+    "maitrise d'oeuvre": -8,
+    "maîtrise d'œuvre": -8,
+    "moe": -8,
+    "mission d'études": -6,
+    "assistance à maîtrise d'ouvrage": -6,
+    "amo": -6,
 }
 
 # Termes envoyés à l'API en recherche plein-texte (pré-filtrage côté serveur).
@@ -60,7 +67,7 @@ KEYWORDS_SCORING = {
 # ancrage, tirant, renforcement) feraient exploser le volume. Ils restent
 # évalués côté client une fois l'annonce remontée par un terme discriminant.
 SEARCH_TERMS = [
-    "micropieux", "pieux",
+    "micropieux", "pieux", "grillage",
     "paroi berlinoise", "micro-berlinoise", "paroi clouée",
     "soutènement", "confortement",
     "tirant d'ancrage",
@@ -92,10 +99,28 @@ SOUTH_DEPARTMENTS = {
     "09", "11", "12", "30", "31", "32", "34", "46", "48", "65", "66", "81", "82",
     # Nouvelle-Aquitaine
     "16", "17", "19", "23", "24", "33", "40", "47", "64", "79", "86", "87",
+    #Rhone Alpes
+    "01", "07", "26", "38", "42", "43",
 }
 
 # ==================== DATES ====================
 DEFAULT_LOOKBACK_DAYS = 30
+
+# ==================== DISPONIBILITÉ DES OFFRES ====================
+# On ne veut QUE des appels d'offre encore ouverts (pas de marché déjà
+# attribué/accepté).
+#
+# 1) Filtre serveur sur la "nature" de l'avis. On garde uniquement les avis
+#    d'appel à la concurrence et on écarte les "ATTRIBUTION" (résultat de
+#    marché = déjà accepté), "ANNULATION", "PRE-INFORMATION", etc.
+ONLY_OPEN_TENDERS = True
+ALLOWED_NATURES = {"APPEL_OFFRE"}
+
+# 2) Filtre client : on écarte les annonces dont la date limite de réponse
+#    est dépassée (on ne peut plus candidater). Si la date limite est absente,
+#    on garde l'annonce (voir KEEP_TENDERS_WITHOUT_DEADLINE).
+EXCLUDE_EXPIRED_DEADLINE = True
+KEEP_TENDERS_WITHOUT_DEADLINE = True
 
 # ==================== EMAIL ====================
 EMAIL_RECIPIENT = "luc.deldem@epc-france.com"

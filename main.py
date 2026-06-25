@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from boamp_fetcher import BOAMPFetcher
 from filtering import TenderFilter
-from email_sender import send_email
+from email_sender import send_email, build_html_report, save_html_report
 from config import DEFAULT_LOOKBACK_DAYS, SCORE_THRESHOLD_FOR_EMAIL
 
 
@@ -97,32 +97,20 @@ def main(lookback_days: int = DEFAULT_LOOKBACK_DAYS, send_email_flag: bool = Tru
             logger.info(f"   URL: {tender['url']}")
 
         # ===================== ÉTAPE 4bis =====================
-        # Rapport HTML optionnel
+        # Construction du rapport HTML (template responsive partagé)
+        html_content = build_html_report(final_tenders, lookback_days=lookback_days)
         try:
-            from email_sender import save_html_report
-            report_path = save_html_report(final_tenders)
+            report_path = save_html_report(
+                final_tenders, lookback_days=lookback_days)
             logger.info(f"\n💾 Rapport HTML : {report_path}")
         except Exception as e:
-            logger.warning(f"⚠️ Rapport HTML non généré : {e}")
+            logger.warning(f"⚠️ Rapport HTML non sauvegardé : {e}")
 
         # ===================== ÉTAPE 5 =====================
         if send_email_flag:
             logger.info("\n📧 Envoi email (Resend API)...")
 
             subject = f"📢 BOAMP - {len(final_tenders)} opportunités détectées"
-
-            html_content = "\n".join([
-                f"""
-                <h2>{t['titre']}</h2>
-                <p><b>Score:</b> {t['score_initial']}</p>
-                <p><b>Acheteur:</b> {t['acheteur']}</p>
-                <p><b>Région:</b> {t['region']}</p>
-                <p><a href="{t['url']}">Voir l'annonce</a></p>
-                <hr>
-                """
-                for t in final_tenders
-            ])
-
             send_email(subject, html_content)
 
             logger.info("✅ Email envoyé")
